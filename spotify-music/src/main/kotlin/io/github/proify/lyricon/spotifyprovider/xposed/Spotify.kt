@@ -67,7 +67,26 @@ object Spotify : YukiBaseHooker(), DownloadCallback {
             onCreate { initProvider() }
         }
         hookMediaSession()
-        hookOkHttp()
+        hookHeaders()
+    }
+
+    /**
+     * 抓取 Spotify 请求头（authorization / client-token / user-agent / x-client-id）。
+     *
+     * 新版 Spotify（145505446+）的 R8 全量内联了 OkHttp 核心类（okhttp3.Headers 等），
+     * 旧版 hook okhttp3.Headers 会抛 ClassNotFoundException。新版走 Cronet，
+     * 所有 header 都会经过 com.spotify.jvm.jni.NativeHelpers.Companion#byteArrayToMap
+     * （key\0value\0 序列化），hook 它即可拿到全部 header。
+     *
+     * 两个 hook 点都 try-catch 包裹：老版 OkHttp 路径保留兼容，任一成功即可。
+     */
+    private fun hookHeaders() {
+        runCatching { hookOkHttp() }.onFailure {
+            ProviderDiagnostics.debug(TAG) { "OkHttp header hook unavailable: ${it.message}" }
+        }
+        runCatching { hookNativeHeaders() }.onFailure {
+            ProviderDiagnostics.debug(TAG) { "Native header hook unavailable: ${it.message}" }
+        }
     }
 
     private fun hookOkHttp() {
@@ -81,6 +100,30 @@ object Spotify : YukiBaseHooker(), DownloadCallback {
                         val keyLowercase = key.lowercase(Locale.ENGLISH)
                         if (keyLowercase in SpotifyApi.keysRequired) {
                             SpotifyApi.headers[keyLowercase] = value
+                        }
+                    }
+                }
+            }
+    }
+
+    /**
+     * 新版 Spotify（Cronet 网络栈）的 header 抓取。
+     * NativeHelpers.Companion.byteArrayToMap(byte[]) 把所有请求 header 从
+     * key\0value\0 序列化还原成 Map，after 里直接提取所需 key。
+     */
+    private fun hookNativeHeaders() {
+        "com.spotify.jvm.jni.NativeHelpers\$Companion".toClass(appClassLoader)
+            .resolve()
+            .method { name = "byteArrayToMap" }
+            .hook {
+                after {
+                    val map = result as? Map<*, *> ?: return@after
+                    map.forEach { (key, value) ->
+                        if (key is String && value is String) {
+                            val keyLowercase = key.lowercase(Locale.ENGLISH)
+                            if (keyLowercase in SpotifyApi.keysRequired) {
+                                SpotifyApi.headers[keyLowercase] = value
+                            }
                         }
                     }
                 }
