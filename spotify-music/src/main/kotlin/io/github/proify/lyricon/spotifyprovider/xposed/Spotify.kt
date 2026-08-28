@@ -115,6 +115,7 @@ object Spotify : YukiBaseHooker(), DownloadCallback {
         "com.spotify.jvm.jni.NativeHelpers\$Companion".toClass(appClassLoader)
             .resolve()
             .method { name = "byteArrayToMap" }
+            .first()
             .hook {
                 after {
                     val map = result as? Map<*, *> ?: return@after
